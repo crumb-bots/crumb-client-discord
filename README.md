@@ -3,7 +3,7 @@
 > [!WARNING]
 > This library is still under developement and is not yet ready for production.
 
-A lightweight bare minimum API wrapper for Discord's v10 API. 
+A lightweight bare minimum API wrapper for Discord's v10 API made in python.
 
 ## Implemented
 - zlib transport compression
