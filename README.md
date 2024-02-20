@@ -16,4 +16,4 @@ A lightweight bare minimum API wrapper for Discord's v10 API made in python.
 - Embeds
 - Buttons, Modals, App commands, User commands
 - Permissions checking
-- Add try statements 
+- Better verbose, error handling
