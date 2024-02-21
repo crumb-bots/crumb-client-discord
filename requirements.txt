@@ -1,2 +1,3 @@
 httpx
 websockets==12.0
+imageio
