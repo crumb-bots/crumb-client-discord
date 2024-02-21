@@ -1,2 +1,2 @@
 httpx
-websockets
+websockets==12.0
