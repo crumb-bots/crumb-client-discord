@@ -4,6 +4,5 @@ websockets
 imageio
 soundfile
 asyncio
-concurrent.futures
 numpy
 pillow
