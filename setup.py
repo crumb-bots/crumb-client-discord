@@ -10,7 +10,7 @@ def parse_requirements(filename):
     return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
 
 setup(
-    name='SimpleBotClient',
+    name='CrumbClient',
     version='1.0',
     author='Eric Pan',
     author_email='hello@jointhebread.army',
@@ -19,6 +19,7 @@ setup(
     long_description_content_type='text/markdown',
     url='https://github.com/crumb-bots/discord-bot-client',
     packages=find_packages(),
+    py_modules=['CrumbClient'],  # Module name
     install_requires=parse_requirements('requirements.txt'),
     classifiers=[
         "Programming Language :: Python :: 3",
