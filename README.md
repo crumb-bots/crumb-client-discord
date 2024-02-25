@@ -5,6 +5,19 @@
 
 A lightweight bare minimum API wrapper for Discord's v10 API made in python.
 
+## Install
+```sh
+git clone https://github.com/crumb-bots/crumb-client-discord && cd crumb-client-discord
+pip install .
+```
+
+## Example Usage
+```py
+import CrumbClient
+
+...
+```
+
 ## Implemented
 - zlib transport compression
 - Changing Bot Pronouns and avatar (Including Animated gifs)
