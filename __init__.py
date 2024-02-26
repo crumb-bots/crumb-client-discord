@@ -7,6 +7,7 @@ GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream'
 
 # Modules
 import os
+import importlib
 import json
 import httpx
 import websockets
@@ -16,7 +17,18 @@ import base64
 import random
 
 from time import monotonic
+from urllib.parse import urlencode
 from inspect import signature, Parameter
+
+class Attachment(object):
+    local_path:str
+    filename:str
+
+    def __init__(self, local_path:str, filename:str):
+        self.local_path = local_path
+        self.filename = filename
+
+        self.mimetype = "image/png"
 
 class Color:
     ''' This class contains colors for embeds that can be used in the color field of the `crumb.Embed` object. '''
@@ -165,7 +177,7 @@ class Message(object):
         self.reference = reference
         self._token = token
 
-    async def send_in_channel(self, content=None, embeds=None):
+    async def send_in_channel(self, content=None, embeds=None, attachments=None):
         url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
         headers = {"authorization": "Bot " + self._token}
 
@@ -175,6 +187,20 @@ class Message(object):
                 "parse": [],
             }
         }
+
+        files = []
+
+        if attachments != None:
+
+            if len(attachments) == 1:
+                files.append(
+                        (f'file', (attachments[0].filename, open(attachments[0].local_path, 'rb').read())),
+                )
+            else:
+                for attachment_number in range(len(attachments)):
+                    files.append(
+                        (f'file{attachment_number+1}', (attachments[attachment_number].filename, open(attachments[attachment_number].local_path, 'rb'))),
+                    )
 
         if embeds != None:
             if isinstance(embeds, list):
@@ -188,14 +214,33 @@ class Message(object):
 
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=content)
-            response.raise_for_status()
-            return response
+            if files != []:
+            
+                data = {}
+                # data["json"] = json.dumps(content)
+
+                # Add files to the dictionary
+                for key, (filename, file_data) in files:
+                    data[key] = (filename, file_data)
+
+                response = await client.post(url, headers=headers, json=content, files=data)
+                response.raise_for_status()
+                return response
+            else:
+                response = await client.post(url, headers=headers, json=content)
+                response.raise_for_status()
+                return response
 
     async def send_voice_message(self, file_location):
         data = None
 
-        audiotools = __import__("ext.audiotools", fromlist=['*'])
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+        module_path = os.path.join(current_dir, "ext/audiotools.py")
+
+        loader = importlib.machinery.SourceFileLoader("ext.audiotools", module_path)
+
+        audiotools = loader.load_module()
 
         duration_secs = 0
 
@@ -753,11 +798,15 @@ class Client(object):
 
         if btype == "image/gif":
 
-            imagetools = __import__("ext.imagetools", fromlist=['*'])
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+
+            module_path = os.path.join(current_dir, "ext/audiotools.py")
+
+            loader = importlib.machinery.SourceFileLoader("ext.audiotools", module_path)
+
+            imagetools = loader.load_module()
 
             new_profile_data = imagetools.compress_gif_bytes(new_profile_data)
-
-            del imagetools
 
         new_profile_data = base64.b64encode(new_profile_data).decode('utf-8')
 
