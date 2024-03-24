@@ -28,6 +28,7 @@ import CrumbClient
 - Voice Message Sending (With automatic to ogg conversion)
 - Descriptions for slash commands and options
 - Loading modules in `ext` dynamically, offloading when not needed
+- Discord Polls! 
 
 ## TODO
 - Buttons, Modals, App commands, User commands
