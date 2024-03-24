@@ -17,7 +17,7 @@ import base64
 import random
 
 from time import monotonic
-from urllib.parse import urlencode
+from typing import Union
 from inspect import signature, Parameter
 
 class Attachment(object):
@@ -28,8 +28,124 @@ class Attachment(object):
         self.local_path = local_path
         self.filename = filename
 
-        self.mimetype = "image/png"
+class Error:
+    class PermissionDenied(Exception): ...
+    class RequestEntityTooLarge(Exception): ...
+    class BadGateway(Exception): ...
+    class InternalServerError(Exception): ...
+    class TooManyRequests(Exception): ...
+    class Unknown(Exception): ...
+    class NotFound(Exception): ...
+    class Forbidden(Exception): ...
+    class Unauthorized(Exception): ...
+    class Failed(Exception): ...
 
+class Emoji(object):
+    id:int
+    name:str
+    def __init__(self, id:int=None, name:str=""):
+        self.id=id
+        self.name=name
+
+class PollOption(object):
+    """
+    Represents an option in a poll.
+
+    Attributes:
+        type (str): The type of the poll option.
+        text (str): The text of the poll option.
+        emoji (Union[Emoji, int]): The emoji associated with the poll option, can be an Emoji object or an int ID.
+
+    Args:
+        text (str): The text of the poll option.
+        emoji (Union[Emoji, int], optional): The emoji associated with the poll option. Defaults to None.
+        type (str, optional): The type of the poll option. Defaults to "poll_media".
+    """
+
+    type: str
+    text: str
+    emoji: Union[Emoji, int]
+
+    def __init__(self, text: str, emoji: Union[Emoji, int]=None, type: str="poll_media"):
+        self.text = text
+        self.emoji = emoji
+        self.type = type
+
+    def _to_json(self):
+        """
+        Converts the PollOption instance to a JSON-serializable dictionary.
+
+        Returns:
+            dict: A dictionary representation of the PollOption, suitable for JSON serialization.
+        """
+        data = {}
+
+        data[self.type] = {}
+
+        data[self.type]['text'] = self.text
+
+        if self.emoji is not None:
+            if isinstance(self.emoji, Emoji):
+                emoji_data = {'id': str(self.emoji.id), 'name': ''}
+                data[self.type]['emoji'] = emoji_data
+            else:
+                emoji_data = {'id': str(self.emoji), 'name': ''}
+                data[self.type]['emoji'] = emoji_data
+
+        return data
+
+class Poll(object):
+    """Represents a poll with options that users can vote on.
+
+    Attributes:
+        question (str): The question being asked in the poll.
+        answers (list): The list of PollOption objects representing the answers.
+        duration_hours (int): The duration the poll will be active in hours.
+        layout_type (int): The layout type of the poll.
+        multiselect (bool): Whether multiple selections are allowed in the poll.
+    """
+
+    def __init__(self, question:str, duration_hours:int=24, layout_type:int=1, multiselect:bool=False):
+        """Initializes a new instance of the Poll class.
+
+        Args:
+            question (str): The question for the poll.
+            duration_hours (int, optional): The duration the poll will be active. Defaults to 24.
+            layout_type (int, optional): The layout type of the poll. Defaults to 1.
+            multiselect (bool, optional): Whether the poll allows multiple selections. Defaults to False.
+        """
+        self.question = question
+        self.duration_hours = duration_hours
+        self.layout_type = layout_type
+        self.multiselect = multiselect
+        self.answers = []
+
+    def _to_json(self):
+        """Converts the Poll instance to a JSON-serializable dictionary.
+
+        Returns:
+            dict: A dictionary representation of the Poll instance, suitable for JSON serialization.
+        """
+        json_data = {
+            'flags': 0,
+            'poll': {
+                'question': {'text': self.question,},
+                'answers': [x._to_json() for x in self.answers],
+                'allow_multiselect': self.multiselect,
+                'duration': self.duration_hours,
+                'layout_type': self.layout_type,
+            },
+        }
+
+        return json_data
+    
+    def add_option(self, option:PollOption):
+        """Adds an option to the poll.
+
+        Args:
+            option (PollOption): The PollOption object to add as an answer to the poll.
+        """
+        self.answers.append(option)
 class Color:
     ''' This class contains colors for embeds that can be used in the color field of the `crumb.Embed` object. '''
 
@@ -94,13 +210,34 @@ class Interaction(object):
     member:User
     guild_id:int
     interaction_id:int
+    channel_id:int
+    _token:str
+    _bot_id:int
 
-    def __init__(self, type, token, interaction_id, member, guild_id:int=None):
+    def __init__(self, type, token, interaction_id, member, bot_token:str, bot_id:int, guild_id:int=None, channel_id:int=None):
         self.type=type
         self.token=token
         self.member=member
         self.guild_id=guild_id
         self.interaction_id = interaction_id
+        self.channel_id = channel_id
+        self._token = bot_token
+        self._bot_id = bot_id
+
+    async def defer_response(self):
+        ENDPOINT = f"https://discord.com/api/v10/interactions/{self.interaction_id}/{self.token}/callback"
+
+        content = {
+            "type": 5
+        }
+
+        async with httpx.AsyncClient() as httpx_client:
+            res = await httpx_client.post(
+                url=ENDPOINT,
+                json=content
+            )
+
+            print("DEFERRED",res.text)
 
     async def reply(self, content="", embeds=None, ephemeral=True, embed=None):
 
@@ -140,6 +277,112 @@ class Interaction(object):
 
             print(res.text)
 
+    async def send_voice_message(self, file_location):
+
+        # Defer the interaction first, sending voice message will probably take a while
+
+        await self.defer_response()
+
+        data = None
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+        module_path = os.path.join(current_dir, "ext/audiotools.py")
+
+        loader = importlib.machinery.SourceFileLoader("ext.audiotools", module_path)
+
+        audiotools = loader.load_module()
+
+        duration_secs = 0
+
+        if file_location[::-1].split(".")[0][::-1].lower() != "ogg":
+            export_to = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=15)) + "." + file_location[::-1].split(".")[0][::-1]
+
+            await audiotools.convert_to_ogg(file_location, export_to)
+
+            data = open(export_to, 'rb').read()
+
+            os.remove(export_to)
+
+            duration_secs = await audiotools.get_audio_length(file_location)
+        else:
+            data = open(file_location, 'rb').read()
+            duration_secs = await audiotools.get_audio_length(file_location)
+
+        # waveform = await audiotools.ogg_to_waveform(file_location)
+
+        del audiotools
+
+        await self._send_voice_message(data, duration_secs)
+
+    async def _send_voice_message(self, data, duration_secs, waveform='S0FEMEdEMERHRCNOPj4+UVQ+UUtON1FLRE5OUTRLTktLUUs0S05LS05LLWh/eF5oaFh1b2teaGVhUVRRPk5LSzpOS0FRS1FBdWVHXnVvW4l1TluCf2FvaFtBUUs6YWVYR3JydWV8XkROTktRZVhBZWh1VHJhR15lTi1UVEdETkQnEwkDAAA6R0QjTj5EMEs+MERHRCdOTk5HVEs3R05RR05ONEtLWEFOSz5HTlE+VEdEQX+CXm9lYVt4a15vZWhRTk5HR1FLNEdOTkdOTjB4aFRLcnJeeIVePoVydWhyXkFRS05LZVtEaHKFXm9rTk5RTjplYU5Ua3JRcmVYR2tUOg=='):
+
+        # the waveform is just a placeholder as discord doesnt actually check if its valid and is just filler waveform
+
+        channel = self.channel_id
+        headers = {
+            'accept': '*/*',
+            "authorization": "Bot " + self._token,
+            'content-type': 'application/json',
+        }
+
+        json_data = {
+            'files': [
+                {
+                    'filename': 'voice-message.ogg',
+                    'file_size': 6986,
+                    'id': '4',
+                    'is_clip': False,
+                },
+            ],
+        }
+
+        response = httpx.post(
+            f'https://discord.com/api/v10/channels/{channel}/attachments',
+            headers=headers,
+            json=json_data,
+        )
+
+        attachment_data = response.json()
+        upload_id = attachment_data['attachments'][0]['upload_url'].split("upload_id=")[1]
+
+        params = {
+            'upload_id': upload_id,
+        }
+
+        response = httpx.put(
+            'https://discord-attachments-uploads-prd.storage.googleapis.com/' + attachment_data['attachments'][0]["upload_filename"],
+            headers=headers,
+            data=data,
+            params=params
+        )
+
+        json_data = {
+            # "payload_json": json.dumps({
+            #     # 'flags': 8192,
+            #     # 'channel_id': f'{channel}',
+            #     'content': 'wsg gang'
+            #     })
+            }
+        
+        files = {}
+
+        files["file"] = "voice-message.ogg", data
+    
+        response = httpx.patch(
+            f"https://discord.com/api/v10/webhooks/{self._bot_id}/{self.token}/messages/@original",
+            headers=headers,
+            data=json_data,
+            files=files
+        )
+
+        print(response.text)
+        print(response.status_code)
+
+        # return response.json()['id']
+
+    respond = reply
+
 
 class InteractionAttachment(object):
     id:int
@@ -156,6 +399,8 @@ class InteractionAttachment(object):
             with open(path, "wb") as f:
                 f.write(res.content)
 
+class Polls:
+    max_time = 168
 
 class Message(object):
     id:int
@@ -177,30 +422,30 @@ class Message(object):
         self.reference = reference
         self._token = token
 
-    async def send_in_channel(self, content=None, embeds=None, attachments=None):
-        url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
+    async def send_in_channel(self, content=None, embeds=None, attachments=None, poll:Poll=None):
+        url = f"https://discord.com/api/v9/channels/{self.channel_id}/messages"
         headers = {"authorization": "Bot " + self._token}
+
+        X_Super_Properties = {"client_build_number":277953}
+
+        headers["X-Super-Properties"] = base64.b64encode(json.dumps(X_Super_Properties).encode('utf-8')).decode('utf-8')
 
         content = {
             "content": content,
             "allowed_mentions": {
-                "parse": [],
+                "parse": []
             }
         }
 
-        files = []
+        if poll: content=poll._to_json()
 
+        
+
+        files = {}
         if attachments != None:
-
-            if len(attachments) == 1:
-                files.append(
-                        (f'file', (attachments[0].filename, open(attachments[0].local_path, 'rb').read())),
-                )
+            if len(attachments) == 1: files["file"] = attachments[0].filename, open("./"+attachments[0].local_path, 'rb'),
             else:
-                for attachment_number in range(len(attachments)):
-                    files.append(
-                        (f'file{attachment_number+1}', (attachments[attachment_number].filename, open(attachments[attachment_number].local_path, 'rb'))),
-                    )
+                for attachment_number in range(len(attachments)): files[f"file{attachment_number+1}"] = attachments[attachment_number].filename, open("./"+attachments[attachment_number].local_path, 'rb'),
 
         if embeds != None:
             if isinstance(embeds, list):
@@ -214,21 +459,19 @@ class Message(object):
 
 
         async with httpx.AsyncClient() as client:
-            if files != []:
-            
-                data = {}
-                # data["json"] = json.dumps(content)
-
-                # Add files to the dictionary
-                for key, (filename, file_data) in files:
-                    data[key] = (filename, file_data)
-
-                response = await client.post(url, headers=headers, json=content, files=data)
+            if files != {} and not poll:
+                
+                response = await client.post(url, headers=headers, data={"payload_json": json.dumps(content)}, files=files)
+                
                 response.raise_for_status()
                 return response
             else:
                 response = await client.post(url, headers=headers, json=content)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except:
+                    if poll:
+                        await self.send_in_channel(content="This server does not have the polls feature yet.")
                 return response
 
     async def send_voice_message(self, file_location):
@@ -333,7 +576,7 @@ class Message(object):
 
         return response.json()['id']
         
-    async def reply(self, content=None, mention_author=True, embeds=None):
+    async def reply(self, content=None, mention_author=True, embeds=None, attachments=None):
         url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
         headers = {"authorization": "Bot " + self._token}
         content = {
@@ -345,6 +588,12 @@ class Message(object):
             }
         }
 
+        files = {}
+        if attachments != None:
+            if len(attachments) == 1: files["file"] = attachments[0].filename, open("./"+attachments[0].local_path, 'rb'),
+            else:
+                for attachment_number in range(len(attachments)): files[f"file{attachment_number+1}"] = attachments[attachment_number].filename, open("./"+attachments[attachment_number].local_path, 'rb'),
+
         if embeds != None:
             if isinstance(embeds, list):
                 content["embeds"] = []
@@ -352,14 +601,19 @@ class Message(object):
                 for embed in embeds:
                     content["embeds"].append(embed.to_dict())
             else:
-                print("SINGLE EMBED, SETTING content['EMBEDS'] to EMBED.to_dict")
                 content["embeds"] = [embeds.to_dict()]
-
-
+        
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=content)
-            response.raise_for_status()
-            return response
+            if files != {}:
+                
+                response = await client.post(url, headers=headers, data={"payload_json": json.dumps(content)}, files=files)
+                
+                response.raise_for_status()
+                return response
+            else:
+                response = await client.post(url, headers=headers, json=content)
+                response.raise_for_status()
+                return response
 
 class Client(object):
     slash_command_descriptors = {}
@@ -496,76 +750,90 @@ class Client(object):
                     print(event_type)
                     Debug.print_json(event_data)
 
-                    # print(event_type, event_data)
-
                     if event_type == "READY":
-                        # {'t': 'READY', 's': 1, 'op': 0, 'd': {'v': 10, 'user_settings': {}, 'user': {'verified': True, 'username': 'Testing Utilities', 'mfa_enabled': True, 'id': '', 'global_name': None, 'flags': 0, 'email': None, 'discriminator': '', 'bot': True, 'avatar': ''}, 'session_type': 'normal', 'session_id': ', 'resume_gateway_url': 'wss://gateway-us-east1-c.discord.gg', 'relationships': [], 'private_channels': [], 'presences': [], 'guilds': [{'unavailable': True, 'id': ''}], 'guild_join_requests': [], 'geo_ordered_rtc_regions': ['seattle', 'santa-clara', 'us-west', 'us-central', 'us-south'], 'current_location': ['CA', 'CA:BC'], 'auth': {}, 'application': {'id': '1203803535372976229', 'flags': 8953856}, '_trace': ['["gateway-prd-us-east1-c-r6cd",{"micros":66110,"calls":["id_created",{"micros":829,"calls":[]},"session_lookup_time",{"micros":342,"calls":[]},"session_lookup_finished",{"micros":14,"calls":[]},"discord-sessions-prd-2-275",{"micros":64425,"calls":["start_session",{"micros":55335,"calls":["discord-api-677679599-hmx6r",{"micros":48439,"calls":["get_user",{"micros":8118},"get_guilds",{"micros":5537},"send_scheduled_deletion_message",{"micros":14},"guild_join_requests",{"micros":2},"authorized_ip_coro",{"micros":17}]}]},"starting_guild_connect",{"micros":66,"calls":[]},"presence_started",{"micros":308,"calls":[]},"guilds_started",{"micros":100,"calls":[]},"guilds_connect",{"micros":2,"calls":[]},"presence_connect",{"micros":8559,"calls":[]},"connect_finished",{"micros":8564,"calls":[]},"build_ready",{"micros":28,"calls":[]},"clean_ready",{"micros":0,"calls":[]},"optimize_ready",{"micros":23,"calls":[]},"split_ready",{"micros":0,"calls":[]}]}]}]']}}
-                        self.user = User(
-                            id=event_data["user"]["id"],
-                            name=event_data["user"]["username"] + "#" + event_data["user"]["discriminator"],
-                            display_name=event_data["user"]["username"]
-                        )
+                        try:
+                            # {'t': 'READY', 's': 1, 'op': 0, 'd': {'v': 10, 'user_settings': {}, 'user': {'verified': True, 'username': 'Testing Utilities', 'mfa_enabled': True, 'id': '', 'global_name': None, 'flags': 0, 'email': None, 'discriminator': '', 'bot': True, 'avatar': ''}, 'session_type': 'normal', 'session_id': ', 'resume_gateway_url': 'wss://gateway-us-east1-c.discord.gg', 'relationships': [], 'private_channels': [], 'presences': [], 'guilds': [{'unavailable': True, 'id': ''}], 'guild_join_requests': [], 'geo_ordered_rtc_regions': ['seattle', 'santa-clara', 'us-west', 'us-central', 'us-south'], 'current_location': ['CA', 'CA:BC'], 'auth': {}, 'application': {'id': '1203803535372976229', 'flags': 8953856}, '_trace': ['["gateway-prd-us-east1-c-r6cd",{"micros":66110,"calls":["id_created",{"micros":829,"calls":[]},"session_lookup_time",{"micros":342,"calls":[]},"session_lookup_finished",{"micros":14,"calls":[]},"discord-sessions-prd-2-275",{"micros":64425,"calls":["start_session",{"micros":55335,"calls":["discord-api-677679599-hmx6r",{"micros":48439,"calls":["get_user",{"micros":8118},"get_guilds",{"micros":5537},"send_scheduled_deletion_message",{"micros":14},"guild_join_requests",{"micros":2},"authorized_ip_coro",{"micros":17}]}]},"starting_guild_connect",{"micros":66,"calls":[]},"presence_started",{"micros":308,"calls":[]},"guilds_started",{"micros":100,"calls":[]},"guilds_connect",{"micros":2,"calls":[]},"presence_connect",{"micros":8559,"calls":[]},"connect_finished",{"micros":8564,"calls":[]},"build_ready",{"micros":28,"calls":[]},"clean_ready",{"micros":0,"calls":[]},"optimize_ready",{"micros":23,"calls":[]},"split_ready",{"micros":0,"calls":[]}]}]}]']}}
+                            self.user = User(
+                                id=event_data["user"]["id"],
+                                name=event_data["user"]["username"] + "#" + event_data["user"]["discriminator"],
+                                display_name=event_data["user"]["username"]
+                            )
 
-                        await self.dispatch_event("on_ready")
+                            await self.dispatch_event("on_ready")
+                        except Exception as error:
+                            print(f"An Error occured during the dispatch of on_ready: {error}")
 
                     elif event_type == "MESSAGE_CREATE":
-                        if response["d"]["type"] == 0 or response["d"]["type"] == 14:
-                            channel_id = event_data["channel_id"]
+                        try:
+                            if response["d"]["type"] == 0 or response["d"]["type"] == 14:
+                                channel_id = event_data["channel_id"]
 
-                            author = User(
-                                id=int(event_data["author"]["id"]),
-                                name=event_data["author"]["username"],
-                                display_name=event_data["author"]["global_name"]
-                            )
+                                author = User(
+                                    id=int(event_data["author"]["id"]),
+                                    name=event_data["author"]["username"],
+                                    display_name=event_data["author"]["global_name"]
+                                )
 
-                            guild_id = (event_data["guild_id"] if "guild_id" in event_data else None)
+                                guild_id = (event_data["guild_id"] if "guild_id" in event_data else None)
 
-                            message = Message(
-                                id = event_data["id"],
-                                author=author,
-                                channel_id=channel_id,
-                                content=event_data["content"],
-                                token=self._token,
-                                guild_id=guild_id
-                            )
+                                message = Message(
+                                    id = event_data["id"],
+                                    author=author,
+                                    channel_id=channel_id,
+                                    content=event_data["content"],
+                                    token=self._token,
+                                    guild_id=guild_id
+                                )
 
-                            command_prefix = self.command_prefix()
-                            run = True
+                                command_prefix = self.command_prefix()
+                                run = True
 
-                            if message.content:
-                                if message.content.startswith(command_prefix):
-                                    command = message.content.split(command_prefix,1)[1].strip()
-                                    if " " in command:
-                                        command = command.split(" ",1)[0]
-                                    if command in self.commands:
-                                        await self.dispatch_command(command, message)
-                                        run = False
+                                if message.content:
+                                    if message.content.startswith(command_prefix):
+                                        command = message.content.split(command_prefix,1)[1].strip()
+                                        if " " in command:
+                                            command = command.split(" ",1)[0]
+                                        if command in self.commands:
+                                            await self.dispatch_command(command, message)
+                                            run = False
 
-                            if run: await self.dispatch_event("on_message", message)
+                                if run: await self.dispatch_event("on_message", message)
+                        except Exception as error:
+                            print(f"An Error occured during the dispatch of a command: {error}")
 
                     # INTERACTION_CREATE {'version': 1, 'type': 2, 'token': 'interaction token', 'member': {'user': {'username': 'ericpan.xyz', 'public_flags': 4194432, 'id': '746446670228619414', 'global_name': 'Eric', 'discriminator': '0', 'avatar_decoration_data': {'sku_id': '1144056139584127058', 'asset': 'a_911e48f3a695c7f6c267843ab6a96f2f'}, 'avatar': 'c1a2750b45fdf88c898a317111855548'}, 'unusual_dm_activity_until': None, 'roles': ['1179594094985625710', '1203797222265852046'], 'premium_since': None, 'permissions': '562949953421311', 'pending': False, 'nick': None, 'mute': False, 'joined_at': '2023-11-07T02:04:29.866000+00:00', 'flags': 0, 'deaf': False, 'communication_disabled_until': None, 'avatar': None}, 'locale': 'en-GB', 'id': '1206835818526937130', 'guild_locale': 'en-US', 'guild_id': '1171268912462168154', 'guild': {'locale': 'en-US', 'id': '1171268912462168154', 'features': ['CHANNEL_ICON_EMOJIS_GENERATED', 'COMMUNITY', 'NEWS']}, 'entitlements': [], 'entitlement_sku_ids': [], 'data': {'type': 1, 'options': [{'value': 'animal_dog', 'type': 3, 'name': 'wrapper'}], 'name': 'blep', 'id': '1206834813538017300'}, 'channel_id': '1203791167741755444', 'channel': {'type': 0, 'topic': None, 'theme_color': None, 'rate_limit_per_user': 0, 'position': 4, 'permissions': '562949953421311', 'parent_id': '1171268912999055371', 'nsfw': False, 'name': 'submissions', 'last_message_id': '1206835659877384242', 'id': '1203791167741755444', 'icon_emoji': {'name': '📥', 'id': None}, 'guild_id': '1171268912462168154', 'flags': 0}, 'application_id': '1203803535372976229', 'app_permissions': '562949953421311'}
 
                     elif event_type == "INTERACTION_CREATE":
-                        Member = User(
-                            id=event_data['member']['user']['id'],
-                            name=event_data['member']['user']['username'],
-                            display_name=event_data['member']['user']['global_name']
-                        )
+                        # try:
+                            Member = User(
+                                id=event_data['member']['user']['id'],
+                                name=event_data['member']['user']['username'],
+                                display_name=event_data['member']['user']['global_name']
+                            )
 
-                        interaction = Interaction(
-                            type=event_data['type'],
-                            token=event_data['token'],
-                            interaction_id=event_data['id'],
-                            member=Member,
-                            guild_id=(event_data['guild_id'] if 'guild_id' in event_data else None)
-                        )
+                            Debug.print_json(event_data)
 
-                        args = {}
+                            interaction = Interaction(
+                                type=event_data['type'],
+                                token=event_data['token'],
+                                interaction_id=event_data['id'],
+                                member=Member,
+                                bot_token=self._token,
+                                bot_id=self.user.id,
+                                guild_id=(event_data['guild_id'] if 'guild_id' in event_data else None),
+                                channel_id=(event_data['channel_id'] if 'channel_id' in event_data else None)
+                            )
 
-                        for arg in event_data['data']['options']:
-                            args[arg["name"]] = arg["value"]
+                            args = {}
 
-                        await self.dispatch_slash(event_data['data']['name'], interaction, **args)
+                            if 'options' in event_data['data']:
+                                for arg in event_data['data']['options']:
+                                    args[arg["name"]] = arg["value"]
+
+                            
+                            await self.dispatch_slash(event_data['data']['name'], interaction, **args)
+                        # except Exception as error:
+                        #     print(f"An Error occured during the dispatch of an interaction: {error}")
 
     def login(self, token):
         asyncio.get_event_loop().run_until_complete(self.run(token))
@@ -599,7 +867,7 @@ class Client(object):
         else:
             print(f"Command '{name}' not found.")
 
-    def slash(self, name, desc="...", *args, **kwargs):
+    def slash(self, name, desc="...", admin_only=False,*args, **kwargs):
         def decorator(func):
             async def wrapper(context, *args, **kwargs):
                 result = await func(context, *args, **kwargs)
@@ -617,7 +885,7 @@ class Client(object):
                     if dtype is not Parameter.empty:
                         new_data[param] = [dtype, not param_has_default]
 
-            self.slash_commands[name] = {"func": wrapper, "desc": desc, "parameters": new_data, "org_func": func}
+            self.slash_commands[name] = {"func": wrapper, "desc": desc, "parameters": new_data, "org_func": func, "admin_only": admin_only}
 
             print(param_types)
 
@@ -661,6 +929,7 @@ class Client(object):
             slash_name = key
             slash_desc = slash_command["desc"]
             params = slash_command["parameters"]
+            admin_only = slash_command["admin_only"]
         
             opts = []
 
@@ -727,6 +996,9 @@ class Client(object):
                     # ]
             }
 
+            if admin_only:
+                post_data["default_member_permissions"] = "0"
+
             headers = {
                 "authorization": "Bot " + self._token
             }
@@ -734,6 +1006,8 @@ class Client(object):
             res = httpx.post(url, headers=headers, json=post_data)
 
             print(res.text)
+
+    
 
     
     async def purge_all_slash_commands(self):
@@ -755,7 +1029,7 @@ class Client(object):
 
             return [guild["id"] for guild in res]
 
-    async def edit_pronouns(self, new_pronoun):
+    async def update_pronouns(self, new_pronoun):
         guilds = await self.list_guilds(ids_only=True)
 
         headers = {
@@ -779,7 +1053,10 @@ class Client(object):
 
                 print("RESPONSE", e.json(), "https://canary.discord.com/api/v10/guilds/%s/members/@me" % gid)
 
-    async def update_profile_picture(self, new_profile_data: str = "", file: str = ""):
+    async def connect_to_vc(self, channel_id):
+        self._websocket.send(json.dumps({"op": 4, "d": {"channel_id": channel_id}}))
+
+    async def update_avatar(self, new_profile_data: str = "", file: str = ""):
 
         if file:
             with open(file, "rb") as f:
@@ -800,9 +1077,9 @@ class Client(object):
 
             current_dir = os.path.dirname(os.path.abspath(__file__))
 
-            module_path = os.path.join(current_dir, "ext/audiotools.py")
+            module_path = os.path.join(current_dir, "ext/imagetools.py")
 
-            loader = importlib.machinery.SourceFileLoader("ext.audiotools", module_path)
+            loader = importlib.machinery.SourceFileLoader("ext.imagetools", module_path)
 
             imagetools = loader.load_module()
 
@@ -819,6 +1096,49 @@ class Client(object):
 
         payload = {
             "avatar": "data:" + btype + ";base64," + new_profile_data,
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(url, headers=headers, json=payload, timeout=30)
+
+            print("API RESPONSE", response.text)
+            print(response.status_code)
+    async def update_banner(self, new_banner_data: str = "", file: str = ""):
+
+        if file:
+            with open(file, "rb") as f:
+                new_banner_data = f.read()
+
+        types = {
+            "png": "image/png",
+            "apng": "image/apng",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+        }
+
+        btype = types[file[::-1].split(".",1)[0][::-1].lower()]
+
+        if btype == "image/gif":
+
+            imagetools = __import__("ext.imagetools", fromlist=['*'])
+
+            new_banner_data = imagetools.compress_gif_bytes(new_banner_data)
+
+            del imagetools
+
+        new_banner_data = base64.b64encode(new_banner_data).decode('utf-8')
+
+        url = "https://discord.com/api/v10/users/@me"
+
+        headers = {
+            "Authorization": f"Bot {self._token}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "banner": "data:" + btype + ";base64," + new_banner_data,
         }
 
         async with httpx.AsyncClient() as client:
